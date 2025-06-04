@@ -97,7 +97,10 @@ void tokenize(dynamic_array *tokens, char *buffer) {
   token token;
 
   do {
-    if (*current == '\0') {
+    if (*current == ' ') {
+      current++;
+      continue;
+    } else if (*current == '\0') {
       token.kind = TOKEN_END;
     } else if (isdigit(*current)) {
       token.kind = TOKEN_TERM;
@@ -129,43 +132,6 @@ void tokenize(dynamic_array *tokens, char *buffer) {
 
     dynamic_array_append(tokens, &token);
   } while (token.kind != TOKEN_END);
-}
-
-void print_tokens(dynamic_array *tokens) {
-  for (unsigned int i = 0; i <= tokens->count - 1; i++) {
-    token token;
-    dynamic_array_get(tokens, i, &token);
-
-    switch (token.kind) {
-    case TOKEN_TERM:
-      printf("Term: %d\n", token.value);
-      break;
-    case TOKEN_OPERATION_ADDITION:
-      printf("Operation: +\n");
-      break;
-    case TOKEN_OPERATION_SUBTRACTION:
-      printf("Operation: -\n");
-      break;
-    case TOKEN_OPERATION_MULTIPLICATION:
-      printf("Operation: *\n");
-      break;
-    case TOKEN_OPERATION_DIVISION:
-      printf("Operation: /\n");
-      break;
-    case TOKEN_BRACKET_OPEN:
-      printf("Bracket Open\n");
-      break;
-    case TOKEN_BRACKET_CLOSE:
-      printf("Bracket Close\n");
-      break;
-    case TOKEN_INVALID:
-      printf("Invalid\n");
-      break;
-    case TOKEN_END:
-      printf("End\n");
-      break;
-    }
-  }
 }
 
 // Expressions
@@ -206,66 +172,80 @@ void parser_current(parser *p, token *token) {
 
 void parser_advance(parser *p) { p->position++; }
 
-void parse_tokens(dynamic_array *tokens, parser *p, expr_node *root_expr) {
+expr_node *parse_expr(parser *p);
+
+expr_node *parse_factor(parser *p) {
   token token;
   parser_current(p, &token);
-
-  expr_node *lhs = malloc(sizeof(expr_node));
-
   if (token.kind == TOKEN_TERM) {
-    lhs->kind = EXPR_TERM;
-    lhs->term = token.value;
+    expr_node *node = malloc(sizeof(expr_node));
+    node->kind = EXPR_TERM;
+    node->term = token.value;
     parser_advance(p);
+    return node;
   } else if (token.kind == TOKEN_BRACKET_OPEN) {
     parser_advance(p);
-    parse_tokens(tokens, p, lhs);
-
+    expr_node *node = parse_expr(p);
     parser_current(p, &token);
     if (token.kind != TOKEN_BRACKET_CLOSE) {
-      printf("Syntax error: expected closing parenthesis\n");
+      printf("Syntax error: expected ')'\n");
       exit(1);
     }
     parser_advance(p);
+    return node;
   } else {
     printf("Syntax error: expected term or '('\n");
     exit(1);
   }
+}
 
-  parser_current(p, &token);
-  if (token.kind == TOKEN_OPERATION_ADDITION ||
-      token.kind == TOKEN_OPERATION_SUBTRACTION ||
-      token.kind == TOKEN_OPERATION_MULTIPLICATION ||
-      token.kind == TOKEN_OPERATION_DIVISION) {
+expr_node *parse_term(parser *p) {
+  expr_node *left = parse_factor(p);
+  while (1) {
+    token token;
+    parser_current(p, &token);
 
-    parser_advance(p);
+    if (token.kind == TOKEN_OPERATION_MULTIPLICATION ||
+        token.kind == TOKEN_OPERATION_DIVISION) {
+      parser_advance(p);
+      expr_node *right = parse_factor(p);
 
-    expr_node *rhs = malloc(sizeof(expr_node));
-    parse_tokens(tokens, p, rhs);
-
-    switch (token.kind) {
-    case TOKEN_OPERATION_ADDITION:
-      root_expr->kind = EXPR_ADD;
-      break;
-    case TOKEN_OPERATION_SUBTRACTION:
-      root_expr->kind = EXPR_SUBTRACT;
-      break;
-    case TOKEN_OPERATION_MULTIPLICATION:
-      root_expr->kind = EXPR_MULTIPLY;
-      break;
-    case TOKEN_OPERATION_DIVISION:
-      root_expr->kind = EXPR_DIVIDE;
-      break;
-    default:
+      expr_node *parent = malloc(sizeof(expr_node));
+      parent->kind = (token.kind == TOKEN_OPERATION_MULTIPLICATION)
+                         ? EXPR_MULTIPLY
+                         : EXPR_DIVIDE;
+      parent->binary.left = left;
+      parent->binary.right = right;
+      left = parent;
+    } else {
       break;
     }
-    root_expr->binary.left = lhs;
-    root_expr->binary.right = rhs;
-
-    return;
   }
+  return left;
+}
 
-  *root_expr = *lhs;
-  free(lhs);
+expr_node *parse_expr(parser *p) {
+  expr_node *left = parse_term(p);
+  while (1) {
+    token token;
+    parser_current(p, &token);
+
+    if (token.kind == TOKEN_OPERATION_ADDITION ||
+        token.kind == TOKEN_OPERATION_SUBTRACTION) {
+      parser_advance(p);
+      expr_node *right = parse_term(p);
+
+      expr_node *parent = malloc(sizeof(expr_node));
+      parent->kind =
+          (token.kind == TOKEN_OPERATION_ADDITION) ? EXPR_ADD : EXPR_SUBTRACT;
+      parent->binary.left = left;
+      parent->binary.right = right;
+      left = parent;
+    } else {
+      break;
+    }
+  }
+  return left;
 }
 
 float evaluate_expr(expr_node *parent_expr) {
@@ -287,22 +267,33 @@ float evaluate_expr(expr_node *parent_expr) {
   }
 }
 
+void free_expr(expr_node *expr) {
+  if (!expr)
+    return;
+  if (expr->kind != EXPR_TERM) {
+    free_expr(expr->binary.left);
+    free_expr(expr->binary.right);
+  }
+  free(expr);
+}
+
 int main() {
   while (1) {
     char buffer[1024];
 
     printf("\n>>> ");
-    scanf("%s", buffer);
+    fgets(buffer, sizeof(buffer), stdin);
+    buffer[strcspn(buffer, "\n")] = '\0';
 
     dynamic_array tokens;
     dynamic_array_init(&tokens, sizeof(token));
     tokenize(&tokens, buffer);
 
     parser p;
-    expr_node *root_expr = malloc(sizeof(expr_node));
     parser_init(&tokens, &p);
-    parse_tokens(&tokens, &p, root_expr);
+    expr_node *root_expr = parse_expr(&p);
 
     printf("  = %.2f", evaluate_expr(root_expr));
+    free_expr(root_expr);
   }
 }
